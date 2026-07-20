@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff9156"/>
+      <stop offset="1" stop-color="#d04900"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="round">
+      <rect x="2" y="2" width="124" height="124" rx="28"/>
+    </clipPath>
+  </defs>
+  <rect x="2" y="2" width="124" height="124" rx="28" fill="url(#bg)"/>
+  <rect x="2" y="2" width="124" height="124" rx="28" fill="none"
+        stroke="#000000" stroke-opacity="0.12" stroke-width="2"/>
+  <path d="M2 2 h124 v40 q-62 18 -124 0 z" fill="url(#shine)"
+        transform="translate(0,2)" clip-path="url(#round)"/>
+  <!-- Markdown "M" -->
+  <path fill="#ffffff" d="M20 90 V38 h16 l14 18 14-18 h16 v52 H64 V62 L50 80 36 62 v28 z"/>
+  <!-- Down arrow -->
+  <path fill="#ffffff" d="M94 92 L78 72 h9 V38 h14 v34 h9 z"/>
+</svg>

@@ -1,0 +1,66 @@
+body {
+	margin: 0;
+	font: 13px/1.4 system-ui, sans-serif;
+	background: #fff;
+	color: #222;
+}
+#app {
+	width: 420px;
+	padding: 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+#filename {
+	padding: 6px 8px;
+	border: 1px solid #ccc;
+	border-radius: 6px;
+	font-weight: 600;
+}
+#preview {
+	height: 260px;
+	resize: vertical;
+	padding: 8px;
+	border: 1px solid #ccc;
+	border-radius: 6px;
+	font: 12px/1.45 ui-monospace, Consolas, monospace;
+	white-space: pre;
+}
+#imgRow {
+	user-select: none;
+	color: #444;
+}
+#buttons {
+	display: flex;
+	gap: 8px;
+}
+#buttons button {
+	flex: 1;
+	padding: 8px 0;
+	border: 0;
+	border-radius: 6px;
+	background: #7852ee;
+	color: #fff;
+	font-weight: 600;
+	cursor: pointer;
+}
+#buttons button:disabled {
+	background: #bbb;
+	cursor: default;
+}
+#buttons #copy {
+	background: #444;
+}
+#status {
+	min-height: 16px;
+	color: #666;
+}
+#status.error {
+	color: #c00;
+}
+#dirRow {
+	color: #444;
+}
+#dirRow a {
+	color: #7852ee;
+}

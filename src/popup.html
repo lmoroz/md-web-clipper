@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+	<meta charset="utf-8">
+	<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+	<div id="app">
+		<input id="filename" type="text" title="Имя файла" spellcheck="false">
+		<textarea id="preview" spellcheck="false" placeholder="Извлекаю страницу…"></textarea>
+		<label id="imgRow"><input id="images" type="checkbox" checked> Скачивать картинки (в подпапку «…_files»)</label>
+		<div id="dirRow">Папка: <span id="dirName">…</span> <a id="changeDir" href="#" hidden>изменить</a></div>
+		<div id="buttons">
+			<button id="save" disabled>Save file</button>
+			<button id="copy" disabled>Copy to clipboard</button>
+		</div>
+		<div id="status"></div>
+	</div>
+	<script src="popup.js"></script>
+</body>
+</html>

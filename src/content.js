@@ -1,0 +1,231 @@
+// Injected on demand by the popup. Extracts the readable part of the page
+// with Defuddle, converts it to Markdown and sends the result to the popup.
+//
+// Note: 'defuddle/full' is a pre-bundled build with its own copy of Turndown
+// inside, so Turndown escaping cannot be patched via the prototype. Instead we
+// post-process the markdown (outside code spans/blocks) to remove the two
+// annoying escapes: "4\." in numbered headings and "\_" in words.
+import Defuddle, { createMarkdownContent } from 'defuddle/full';
+
+// Project items 4 and 5: undo "N\. " and "\_" escaping everywhere except
+// inline code and fenced code blocks (where no escaping ever happens, so any
+// backslash there is original content and must be kept).
+function fixEscaping(md) {
+	return md
+		.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/)
+		.map((part, i) => i % 2
+			? part
+			: part.replace(/(\d)\\\. /g, '$1. ').replace(/\\_/g, '_'))
+		.join('');
+}
+
+// Markdown viewers only recognize a table if it is separated from surrounding
+// text by blank lines. Wiki pages (e.g. Yandex Wiki) often produce a table
+// glued right after a paragraph line, so insert the blank lines ourselves.
+// Fenced code blocks are left untouched ("|" lines there are code).
+function fixTableSpacing(md) {
+	const lines = md.split('\n');
+	const out = [];
+	let inFence = false;
+	for (const line of lines) {
+		if (/^\s*(```|~~~)/.test(line)) {
+			inFence = !inFence;
+			out.push(line);
+			continue;
+		}
+		if (!inFence && out.length) {
+			const prev = out[out.length - 1];
+			const isRow = /^\s*\|/.test(line);
+			const prevIsRow = /^\s*\|/.test(prev);
+			if (isRow !== prevIsRow && prev.trim() !== '' && line.trim() !== '') {
+				out.push('');
+			}
+		}
+		out.push(line);
+	}
+	return out.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Internal anchor links. Wiki pages use transliterated/arbitrary ids as
+// heading anchors (#svyazannaya-user-story). Those ids are lost in markdown:
+// viewers build anchors from the heading TEXT (github-style slug). While we
+// still have the live DOM, resolve each internal link's id to its heading and
+// rewrite the anchor to the slug of the heading text.
+//
+// The heading TEXT is taken from the markdown, not from the DOM: DOM headings
+// often contain junk (hidden "copy link" captions that duplicate the text),
+// while the markdown headings are already cleaned up by Defuddle/Turndown.
+
+function slugify(text) {
+	return text.trim().toLowerCase()
+		.replace(/[^\p{L}\p{N}\s_-]/gu, '')
+		.replace(/\s+/g, '-');
+}
+
+function normSpace(s) {
+	return (s || '').replace(/\s+/g, ' ').trim();
+}
+
+// Plain text of a markdown heading: drop links/images and md formatting marks.
+function stripMdInline(s) {
+	return normSpace(
+		s.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_`~\\]/g, '')
+	);
+}
+
+function mdHeadingTexts(md) {
+	const out = [];
+	let inFence = false;
+	for (const line of md.split('\n')) {
+		if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; continue; }
+		if (inFence) continue;
+		const m = /^#{1,6}\s+(.+)$/.exec(line);
+		if (m) out.push(stripMdInline(m[1]));
+	}
+	return out;
+}
+
+function findHeadingTextInDom(id) {
+	const el = document.getElementById(id) ||
+		(document.getElementsByName(id) || [])[0];
+	if (!el) return null;
+	if (/^H[1-6]$/.test(el.tagName)) return el.textContent;
+	const up = el.closest && el.closest('h1,h2,h3,h4,h5,h6');
+	if (up) return up.textContent;
+	const inner = el.querySelector && el.querySelector('h1,h2,h3,h4,h5,h6');
+	if (inner) return inner.textContent;
+	const next = el.nextElementSibling;
+	if (next && /^H[1-6]$/.test(next.tagName)) return next.textContent;
+	return null;
+}
+
+function fixInternalLinks(md) {
+	const headings = mdHeadingTexts(md);
+	const normed = headings.map((h) => h.toLowerCase());
+	return md.replace(/\]\(#([^)\s]+)\)/g, (m0, id) => {
+		let decoded = id;
+		try { decoded = decodeURIComponent(id); } catch (e) { /* keep raw */ }
+		let domText = findHeadingTextInDom(decoded) || findHeadingTextInDom(id);
+		if (!domText) return m0;
+		domText = normSpace(domText);
+		const key = domText.toLowerCase();
+		// Prefer the markdown heading the DOM text STARTS WITH: hidden junk in
+		// the DOM heading is appended after the real caption.
+		let best = '';
+		let bestLen = 0;
+		for (let i = 0; i < headings.length; i++) {
+			if (normed[i] && key.startsWith(normed[i]) && normed[i].length > bestLen) {
+				best = headings[i];
+				bestLen = normed[i].length;
+			}
+		}
+		if (!best) {
+			// Fallback: de-double "TextText" -> "Text", then use the DOM text.
+			const half = domText.length >> 1;
+			if (domText.length % 2 === 0 &&
+				domText.slice(0, half) === domText.slice(half)) {
+				domText = domText.slice(0, half);
+			}
+			best = domText;
+		}
+		return '](#' + slugify(best) + ')';
+	});
+}
+// ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// Comment blocks (Yandex Tracker and similar). Defuddle strips <header>
+// elements inside comments as clutter, losing the author and the date; and
+// relative dates ("2 часа назад") are useless in a saved archive. We parse a
+// CLONE of the document where:
+// - every <time datetime="..."> gets absolute "dd.mm.yyyy hh:mm" text;
+// - every <article> <header> that looks like a comment header (has <time>,
+//   no h1/h2) is replaced with a plain paragraph "**Author — date**".
+
+function fmtDate(iso) {
+	const d = new Date(iso);
+	if (isNaN(d)) return null;
+	const p = (n) => String(n).padStart(2, '0');
+	return p(d.getDate()) + '.' + p(d.getMonth() + 1) + '.' + d.getFullYear() +
+		' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+// textContent glues adjacent elements together ("призвалНину"); this walker
+// joins text nodes with spaces instead.
+function textWithSpaces(el) {
+	let s = '';
+	const walk = (n) => {
+		if (n.nodeType === 3) { s += n.textContent + ' '; return; }
+		if (n.nodeType === 1) { for (const c of n.childNodes) walk(c); }
+	};
+	walk(el);
+	return normSpace(s);
+}
+
+function prepareDoc() {
+	const doc = document.cloneNode(true);
+	for (const t of doc.querySelectorAll('time[datetime]')) {
+		const s = fmtDate(t.getAttribute('datetime'));
+		if (s) t.textContent = s;
+	}
+	for (const header of doc.querySelectorAll('article header')) {
+		if (!header.querySelector('time')) continue;
+		if (header.querySelector('h1, h2')) continue; // a real article header
+		const h = header.cloneNode(true);
+		for (const junk of h.querySelectorAll('button, svg')) junk.remove();
+		const timeEl = h.querySelector('time');
+		const timeText = timeEl ? normSpace(timeEl.textContent) : '';
+		if (timeEl) timeEl.remove();
+		const author = textWithSpaces(h);
+		if (!author && !timeText) continue;
+		const p = doc.createElement('p');
+		const strong = doc.createElement('strong');
+		const i = doc.createElement('i');
+		i.textContent = author;
+		if (timeText) strong.textContent = ' ' + timeText;
+		strong.prepend(i);
+		const hr = doc.createElement('hr');
+		p.appendChild(hr);
+		p.appendChild(strong);
+		header.replaceWith(p);
+	}
+	return doc;
+}
+// ---------------------------------------------------------------------------
+
+function normalizeTitle(s) {
+	return normSpace(s);
+}
+
+(function clip() {
+	try {
+		const result = new Defuddle(prepareDoc(), { url: document.URL }).parse();
+		let markdown = createMarkdownContent(result.content || '', document.URL).trim();
+		markdown = fixEscaping(markdown);
+		markdown = fixTableSpacing(markdown);
+		markdown = fixInternalLinks(markdown);
+		const title = normalizeTitle(result.title || document.title) || 'Untitled';
+
+		// Project item 6: the page title always becomes the H1 of the document.
+		const firstLine = markdown.split('\n', 1)[0] || '';
+		const firstIsSameH1 =
+			firstLine.startsWith('# ') &&
+			normalizeTitle(firstLine.slice(2)).toLowerCase() === title.toLowerCase();
+		if (!firstIsSameH1) {
+			markdown = '# ' + title + '\n\n' + markdown;
+		}
+		// Project item 1: no frontmatter / properties block - we never add one.
+
+		chrome.runtime.sendMessage({
+			type: 'clip-result',
+			data: { title, markdown, url: document.URL }
+		});
+	} catch (err) {
+		chrome.runtime.sendMessage({
+			type: 'clip-error',
+			error: String(err && err.message ? err.message : err)
+		});
+	}
+})();

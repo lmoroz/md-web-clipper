@@ -1,0 +1,16 @@
+{
+	"name": "md-web-clipper",
+	"version": "0.1.0",
+	"description": "Save the readable part of a web page as a Markdown file (with images). Based on the Defuddle engine used by Obsidian Web Clipper.",
+	"private": true,
+	"scripts": {
+		"build": "node build.mjs"
+	},
+	"dependencies": {
+		"defuddle": "^0.19.1",
+		"turndown": "^7.2.0"
+	},
+	"devDependencies": {
+		"esbuild": "^0.24.0"
+	}
+}
