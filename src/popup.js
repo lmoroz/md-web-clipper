@@ -42,16 +42,34 @@ function extFromDataUrl(dataUrl) {
 	return (m && MIME_EXT[m[1].toLowerCase()]) || '';
 }
 
-// Collect unique image URLs from markdown: ![alt](url) and ![alt](<url>).
+// Collect unique image URLs from markdown ![alt](url) / ![alt](<url>)
+// and from HTML <img src="..."> (complex tables are kept as HTML).
 function collectImageUrls(md) {
 	const urls = [];
-	const re = /!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+"[^"]*")?\s*\)/g;
-	let m;
-	while ((m = re.exec(md)) !== null) {
-		const url = m[1] || m[2];
+	const add = (url) => {
 		if (url && /^https?:/i.test(url) && !urls.includes(url)) urls.push(url);
-	}
+	};
+	const reMd = /!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+"[^"]*")?\s*\)/g;
+	let m;
+	while ((m = reMd.exec(md)) !== null) add(m[1] || m[2]);
+	const reImg = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
+	while ((m = reImg.exec(md)) !== null) add(m[1] || m[2] || m[3]);
 	return urls;
+}
+
+// Relative link destination: no <>, percent-encode the few unsafe characters.
+// Names are underscore-separated already, so this is just a safety net.
+function encodeRelPath(path) {
+	return path.replace(/%/g, '%25').replace(/ /g, '%20')
+		.replace(/\(/g, '%28').replace(/\)/g, '%29');
+}
+
+function rewriteLink(md, url, rel) {
+	return md
+		.split('(' + url + ')').join('(' + rel + ')')
+		.split('(<' + url + '>)').join('(' + rel + ')')
+		.split('src="' + url + '"').join('src="' + rel + '"')
+		.split("src='" + url + "'").join("src='" + rel + "'");
 }
 
 // Runs INSIDE the page: fetches images with the page's cookies/session and
@@ -75,18 +93,6 @@ const fetchImagesInPage = async (urls) => {
 	}));
 	return out;
 };
-
-// Relative link destination: no <>, percent-encode the few unsafe characters.
-// Names are underscore-separated already, so this is just a safety net.
-function encodeRelPath(path) {
-	return path.replace(/%/g, '%25').replace(/ /g, '%20')
-		.replace(/\(/g, '%28').replace(/\)/g, '%29');
-}
-
-function rewriteLink(md, url, rel) {
-	return md.split('(' + url + ')').join('(' + rel + ')')
-		.split('(<' + url + '>)').join('(' + rel + ')');
-}
 
 // Gather everything, put it into IndexedDB and open the save window, which
 // writes the files into a user-chosen folder via the File System Access API.

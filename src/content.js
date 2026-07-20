@@ -136,6 +136,94 @@ function fixInternalLinks(md) {
 
 
 // ---------------------------------------------------------------------------
+// Complex tables. Defuddle's createMarkdownContent treats ANY table that
+// contains a nested <table> as a layout table and flattens all cells into a
+// loose stream (see defuddle markdown.js: hasNestedTables → flatten). Wiki
+// pages (Yandex Wiki) put real data tables with nested tables inside cells
+// (e.g. a type→code mapping). We extract those multi-column tables as cleaned
+// HTML before Turndown, then splice them back — GFM pipe tables can't hold
+// lists/nested tables anyway, and HTML tables render in most viewers.
+
+const TABLE_STUB = (i) => `@@MDWCTABLE${i}@@`;
+
+function isDirectTableChild(el, table) {
+	let p = el.parentElement;
+	while (p && p !== table) {
+		if (p.tagName === 'TABLE') return false;
+		p = p.parentElement;
+	}
+	return p === table;
+}
+
+function cleanupTableHTML(table, baseUrl) {
+	const allowed = new Set([
+		'src', 'href', 'alt', 'title', 'style', 'align', 'width', 'height',
+		'rowspan', 'colspan', 'bgcolor', 'scope', 'valign', 'headers', 'id'
+	]);
+	const clone = table.cloneNode(true);
+	for (const junk of clone.querySelectorAll('button, script, style, svg')) {
+		junk.remove();
+	}
+	// Absolute image URLs so popup can fetch/rewrite them (wiki often uses /path).
+	if (baseUrl) {
+		for (const img of clone.querySelectorAll('img[src]')) {
+			try {
+				img.setAttribute('src', new URL(img.getAttribute('src'), baseUrl).href);
+			} catch { /* keep raw */ }
+		}
+	}
+	const clean = (el) => {
+		for (const attr of [...el.attributes]) {
+			if (!allowed.has(attr.name)) el.removeAttribute(attr.name);
+		}
+		for (const child of el.children) clean(child);
+	};
+	clean(clone);
+	// outerHTML encodes & as &amp;; decode so markdown viewers see real markup
+	return clone.outerHTML
+		.replace(/&amp;/g, '&')
+		.replace(/&lt;/g, '<')
+		.replace(/&gt;/g, '>');
+}
+
+function protectComplexTables(html, baseUrl) {
+	const doc = new DOMParser().parseFromString(html, 'text/html');
+	const stubs = [];
+	for (const table of [...doc.querySelectorAll('table')]) {
+		if (!table.isConnected) continue;
+		const hasNested = [...table.querySelectorAll('table')].some((t) => t !== table);
+		if (!hasNested) continue;
+		const directCells = [...table.querySelectorAll('td, th')]
+			.filter((el) => isDirectTableChild(el, table));
+		const directRows = [...table.querySelectorAll('tr')]
+			.filter((el) => isDirectTableChild(el, table));
+		const cellCounts = directRows.map((tr) =>
+			directCells.filter((c) => c.parentNode === tr).length);
+		const isSingleColumn = directRows.length > 0 &&
+			new Set(cellCounts).size === 1 &&
+			cellCounts[0] <= 1;
+		// Real layout tables: leave for Defuddle to flatten.
+		if (isSingleColumn) continue;
+		const id = stubs.length;
+		stubs.push(cleanupTableHTML(table, baseUrl));
+		const marker = doc.createElement('p');
+		marker.textContent = TABLE_STUB(id);
+		table.replaceWith(marker);
+	}
+	return { html: doc.body.innerHTML, stubs };
+}
+
+function restoreComplexTables(md, stubs) {
+	for (let i = 0; i < stubs.length; i++) {
+		const token = TABLE_STUB(i);
+		if (!md.includes(token)) continue;
+		md = md.split(token).join('\n\n' + stubs[i] + '\n\n');
+	}
+	return md;
+}
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Comment blocks (Yandex Tracker and similar). Defuddle strips <header>
 // elements inside comments as clutter, losing the author and the date; and
 // relative dates ("2 часа назад") are useless in a saved archive. We parse a
@@ -170,6 +258,19 @@ function prepareDoc() {
 		const s = fmtDate(t.getAttribute('datetime'));
 		if (s) t.textContent = s;
 	}
+	// Defuddle EXACT_SELECTORS removes a[href^="#"][class*="anchor"] entirely.
+	// Yandex Wiki puts the ONLY cell label in a.wiki-anchor — unwrap those so the
+	// text survives. Do NOT touch heading clipboard anchors (yfm-clipboard-anchor):
+	// Defuddle must still strip them, otherwise headings become
+	// "Title:#Title" (visually-hidden + # button + visible text).
+	for (const a of doc.querySelectorAll('a.wiki-anchor')) {
+		const span = doc.createElement('span');
+		const id = a.getAttribute('name') ||
+			(a.getAttribute('href') || '').replace(/^#/, '');
+		if (id) span.id = id;
+		while (a.firstChild) span.appendChild(a.firstChild);
+		a.replaceWith(span);
+	}
 	for (const header of doc.querySelectorAll('article header')) {
 		if (!header.querySelector('time')) continue;
 		if (header.querySelector('h1, h2')) continue; // a real article header
@@ -202,7 +303,9 @@ function normalizeTitle(s) {
 (function clip() {
 	try {
 		const result = new Defuddle(prepareDoc(), { url: document.URL }).parse();
-		let markdown = createMarkdownContent(result.content || '', document.URL).trim();
+		const extracted = protectComplexTables(result.content || '', document.URL);
+		let markdown = createMarkdownContent(extracted.html, document.URL).trim();
+		markdown = restoreComplexTables(markdown, extracted.stubs);
 		markdown = fixEscaping(markdown);
 		markdown = fixTableSpacing(markdown);
 		markdown = fixInternalLinks(markdown);
