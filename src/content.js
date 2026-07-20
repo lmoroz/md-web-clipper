@@ -254,9 +254,49 @@ function textWithSpaces(el) {
 
 function prepareDoc() {
 	const doc = document.cloneNode(true);
+	const base = document.URL;
 	for (const t of doc.querySelectorAll('time[datetime]')) {
 		const s = fmtDate(t.getAttribute('datetime'));
 		if (s) t.textContent = s;
+	}
+	// Prefer full-size source when CMS provides it (Pikabu data-large-image).
+	for (const img of doc.querySelectorAll('img[data-large-image]')) {
+		const large = img.getAttribute('data-large-image');
+		if (large) img.setAttribute('src', large);
+	}
+	// Absolute image URLs (Tracker/Wiki often use /ajax/... or /path/.files/...).
+	// Otherwise markdown keeps relatives and popup skips them (only http(s)).
+	for (const img of doc.querySelectorAll('img[src]')) {
+		try {
+			img.setAttribute('src', new URL(img.getAttribute('src'), base).href);
+		} catch { /* keep raw */ }
+	}
+	// Caption lives next to the image (Pikabu .story-block__title, <figcaption>).
+	// Alt often duplicates it — sometimes with raw HTML dumped into the attribute,
+	// which becomes `![...<a href>...](img)` plus a ghost paragraph from that HTML.
+	// Use the caption's plain text as alt (keeps ![text](img)); the caption
+	// paragraph itself stays so links inside it survive.
+	for (const block of doc.querySelectorAll('.story-block, figure')) {
+		const caption = block.querySelector('.story-block__title, figcaption');
+		const capText = caption ? normSpace(caption.textContent) : '';
+		if (!capText) continue;
+		for (const img of block.querySelectorAll('img')) {
+			img.setAttribute('alt', capText);
+		}
+	}
+	// Any leftover alt that still embeds markup → plain text only.
+	for (const img of doc.querySelectorAll('img[alt]')) {
+		const alt = img.getAttribute('alt') || '';
+		if (!/[<>]/.test(alt)) continue;
+		const tmp = doc.createElement('div');
+		tmp.innerHTML = alt;
+		img.setAttribute('alt', normSpace(tmp.textContent || ''));
+	}
+	// title="https://same-as-href" is noise (Pikabu/LOR) → drop it.
+	for (const a of doc.querySelectorAll('a[href][title]')) {
+		const href = a.getAttribute('href') || '';
+		const title = a.getAttribute('title') || '';
+		if (href && title && href === title) a.removeAttribute('title');
 	}
 	// Defuddle EXACT_SELECTORS removes a[href^="#"][class*="anchor"] entirely.
 	// Yandex Wiki puts the ONLY cell label in a.wiki-anchor — unwrap those so the

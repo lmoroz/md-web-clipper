@@ -37,24 +37,36 @@ function extFromUrl(url) {
 	}
 }
 
-function extFromDataUrl(dataUrl) {
-	const m = /^data:([^;,]+)/.exec(dataUrl || '');
-	return (m && MIME_EXT[m[1].toLowerCase()]) || '';
-}
-
 // Collect unique image URLs from markdown ![alt](url) / ![alt](<url>)
 // and from HTML <img src="..."> (complex tables are kept as HTML).
-function collectImageUrls(md) {
+// Relative paths (/ajax/v2/attachments/…) are resolved against pageUrl.
+// Returns { urls, forms }: absolute URLs to fetch, and every spelling that
+// appears in the markdown (so rewrite can replace both /path and https://…).
+function collectImageUrls(md, pageUrl) {
 	const urls = [];
-	const add = (url) => {
-		if (url && /^https?:/i.test(url) && !urls.includes(url)) urls.push(url);
+	const forms = new Map(); // abs -> Set of raw forms in md
+	const add = (raw) => {
+		if (!raw || /^data:/i.test(raw)) return;
+		let abs;
+		try {
+			abs = new URL(raw, pageUrl || undefined).href;
+		} catch {
+			return;
+		}
+		if (!/^https?:/i.test(abs)) return;
+		if (!forms.has(abs)) {
+			forms.set(abs, new Set());
+			urls.push(abs);
+		}
+		forms.get(abs).add(raw);
+		forms.get(abs).add(abs);
 	};
 	const reMd = /!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+"[^"]*")?\s*\)/g;
 	let m;
 	while ((m = reMd.exec(md)) !== null) add(m[1] || m[2]);
 	const reImg = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
 	while ((m = reImg.exec(md)) !== null) add(m[1] || m[2] || m[3]);
-	return urls;
+	return { urls, forms };
 }
 
 // Relative link destination: no <>, percent-encode the few unsafe characters.
@@ -64,35 +76,108 @@ function encodeRelPath(path) {
 		.replace(/\(/g, '%28').replace(/\)/g, '%29');
 }
 
-function rewriteLink(md, url, rel) {
-	return md
-		.split('(' + url + ')').join('(' + rel + ')')
-		.split('(<' + url + '>)').join('(' + rel + ')')
-		.split('src="' + url + '"').join('src="' + rel + '"')
-		.split("src='" + url + "'").join("src='" + rel + "'");
+function rewriteLink(md, urlOrForms, rel) {
+	const forms = typeof urlOrForms === 'string' ? [urlOrForms] : [...urlOrForms];
+	for (const url of forms) {
+		md = md
+			.split('(' + url + ')').join('(' + rel + ')')
+			.split('(<' + url + '>)').join('(' + rel + ')')
+			.split('src="' + url + '"').join('src="' + rel + '"')
+			.split("src='" + url + "'").join("src='" + rel + "'");
+	}
+	return md;
 }
 
-// Runs INSIDE the page: fetches images with the page's cookies/session and
-// returns {url: dataUrl | null}. This is what makes authenticated wikis work.
-const fetchImagesInPage = async (urls) => {
-	const out = {};
-	await Promise.all(urls.map(async (u) => {
-		try {
-			const r = await fetch(u, { credentials: 'include' });
-			if (!r.ok) throw new Error(String(r.status));
-			const blob = await r.blob();
-			out[u] = await new Promise((res, rej) => {
-				const fr = new FileReader();
-				fr.onload = () => res(fr.result);
-				fr.onerror = () => rej(fr.error);
-				fr.readAsDataURL(blob);
+// Runs INSIDE the page: fetch ONE image with the page's cookies/session.
+// Tracker attachments 302 to storage.mds.yandex.net with ACAO:* — that combo
+// fails CORS when credentials:'include' (browser forbids * with credentials).
+// Use same-origin cookies for the Tracker hop, then omit on the CDN URL.
+const fetchOneImageInPage = async (url) => {
+	try {
+		// Happy path: same-origin (or CDN without cookies).
+		const r = await fetch(url, {
+			credentials: 'same-origin',
+			cache: 'no-cache',
+			redirect: 'follow'
+		});
+		if (r.ok) return await encodeBlob(await r.blob());
+	} catch { /* likely CORS on credentialed redirect — fall through */ }
+
+	try {
+		// Explicit hop: read Location from Tracker 302, fetch CDN without cookies.
+		const r1 = await fetch(url, {
+			credentials: 'same-origin',
+			cache: 'no-cache',
+			redirect: 'manual'
+		});
+		if (r1.status >= 300 && r1.status < 400) {
+			const loc = r1.headers.get('Location');
+			if (!loc) return { ok: false, err: 'redirect without Location' };
+			const abs = new URL(loc, url).href;
+			const r2 = await fetch(abs, {
+				credentials: 'omit',
+				cache: 'no-cache',
+				redirect: 'follow'
 			});
-		} catch (e) {
-			out[u] = null;
+			if (!r2.ok) return { ok: false, err: 'http ' + r2.status };
+			return await encodeBlob(await r2.blob());
 		}
-	}));
-	return out;
+		if (r1.ok) return await encodeBlob(await r1.blob());
+		return { ok: false, err: 'http ' + r1.status };
+	} catch (e) {
+		return { ok: false, err: String(e && e.message ? e.message : e) };
+	}
+
+	function encodeBlob(blob) {
+		const type = (blob.type || '').toLowerCase();
+		// Reject HTML/JSON login-or-error bodies Tracker sometimes returns.
+		if (type.startsWith('text/') || type.includes('html') || type.includes('json')) {
+			return { ok: false, err: 'not-image:' + type };
+		}
+		return blob.arrayBuffer().then((buf) => {
+			const bytes = new Uint8Array(buf);
+			if (!bytes.length) return { ok: false, err: 'empty' };
+			if (!type.startsWith('image/') && !looksLikeImage(bytes)) {
+				return { ok: false, err: 'not-image:' + (type || 'unknown') };
+			}
+			// Chunked btoa — String.fromCharCode(...hugeArray) blows the stack.
+			let bin = '';
+			const step = 0x8000;
+			for (let i = 0; i < bytes.length; i += step) {
+				bin += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+			}
+			return {
+				ok: true,
+				type: type.startsWith('image/') ? type : sniffMime(bytes),
+				b64: btoa(bin)
+			};
+		});
+	}
+
+	function looksLikeImage(b) {
+		if (b.length < 4) return false;
+		if (b[0] === 0x89 && b[1] === 0x50) return true; // PNG
+		if (b[0] === 0xff && b[1] === 0xd8) return true; // JPEG
+		if (b[0] === 0x47 && b[1] === 0x49) return true; // GIF
+		if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) return true; // WEBP
+		return false;
+	}
+
+	function sniffMime(b) {
+		if (b[0] === 0x89 && b[1] === 0x50) return 'image/png';
+		if (b[0] === 0xff && b[1] === 0xd8) return 'image/jpeg';
+		if (b[0] === 0x47 && b[1] === 0x49) return 'image/gif';
+		if (b[0] === 0x52 && b[1] === 0x49) return 'image/webp';
+		return 'image/png';
+	}
 };
+
+function b64ToBlob(type, b64) {
+	const bin = atob(b64);
+	const bytes = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+	return new Blob([bytes], { type: type || 'image/png' });
+}
 
 // Gather everything, put it into IndexedDB and open the save window, which
 // writes the files into a user-chosen folder via the File System Access API.
@@ -104,35 +189,34 @@ async function saveFile() {
 	let failed = 0;
 
 	if ($('images').checked) {
-		const urls = collectImageUrls(md);
+		const { urls, forms } = collectImageUrls(md, clip.url);
 		if (urls.length) {
-			setStatus('Скачиваю картинки (' + urls.length + ')…');
-			let fetched = {};
-			try {
-				const inj = await chrome.scripting.executeScript({
-					target: { tabId },
-					func: fetchImagesInPage,
-					args: [urls]
-				});
-				fetched = (inj && inj[0] && inj[0].result) || {};
-			} catch (e) {
-				console.warn('in-page fetch failed:', e);
-			}
 			const folder = base + '_files';
 			let i = 0;
 			for (const url of urls) {
 				i++;
-				const dataUrl = fetched[url];
-				if (!dataUrl) {
-					// Keep the original absolute URL in the markdown.
+				setStatus('Скачиваю картинки (' + i + '/' + urls.length + ')…');
+				let result = null;
+				try {
+					const inj = await chrome.scripting.executeScript({
+						target: { tabId },
+						func: fetchOneImageInPage,
+						args: [url]
+					});
+					result = inj && inj[0] && inj[0].result;
+				} catch (e) {
+					console.warn('in-page fetch failed:', url, e);
+				}
+				if (!result || !result.ok || !result.b64) {
 					failed++;
 					continue;
 				}
-				const ext = extFromDataUrl(dataUrl) || extFromUrl(url) || '.jpg';
+				const blob = b64ToBlob(result.type, result.b64);
+				const ext = MIME_EXT[(result.type || '').toLowerCase()] ||
+					extFromUrl(url) || '.png';
 				const name = 'img-' + String(i).padStart(2, '0') + ext;
-				const blob = await (await fetch(dataUrl)).blob();
 				images.push({ name, blob });
-				md = rewriteLink(md, url, encodeRelPath(folder + '/' + name));
+				md = rewriteLink(md, forms.get(url) || url, encodeRelPath(folder + '/' + name));
 			}
 		}
 	}
@@ -162,6 +246,11 @@ function onClip(data) {
 }
 
 async function refreshDirRow() {
+	if (typeof showDirectoryPicker !== 'function') {
+		$('dirName').textContent = 'Загрузки браузера (выбор папки недоступен)';
+		$('changeDir').hidden = true;
+		return;
+	}
 	const dir = askDir ? null : await kvGet('dir').catch(() => null);
 	$('dirName').textContent = dir ? dir.name : 'будет выбрана при сохранении';
 	$('changeDir').hidden = !dir;
