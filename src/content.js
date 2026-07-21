@@ -298,6 +298,14 @@ function prepareDoc() {
 		const title = a.getAttribute('title') || '';
 		if (href && title && href === title) a.removeAttribute('title');
 	}
+	// Yandex Wiki (YFM) code blocks: line numbers and copy/wrap chrome must not
+	// end up inside the fenced markdown. Keep only .yfm-line text.
+	for (const n of doc.querySelectorAll('.yfm-line-number')) n.remove();
+	for (const junk of doc.querySelectorAll(
+		'.yfm-code-floating, .g-md-viewer-code-block-floating-container'
+	)) {
+		junk.remove();
+	}
 	// Defuddle EXACT_SELECTORS removes a[href^="#"][class*="anchor"] entirely.
 	// Yandex Wiki puts the ONLY cell label in a.wiki-anchor — unwrap those so the
 	// text survives. Do NOT touch heading clipboard anchors (yfm-clipboard-anchor):
