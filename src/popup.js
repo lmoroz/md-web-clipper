@@ -11,14 +11,14 @@ function setStatus(text, isError) {
 	el.className = isError ? 'error' : '';
 }
 
-// Windows-safe file/folder name; spaces become underscores.
+// File/folder base name: spaces → `_`, keep only letters/digits/underscore
+// (so markdown image links never need %28-style encoding in «…_files»).
 function sanitizeName(name) {
-	return name
-		.replace(/[<>:"/\\|?*]/g, ' ')
-		.replace(/\s+/g, ' ')
-		.trim()
-		.replace(/[. ]+$/, '')
-		.replace(/ /g, '_')
+	return (name || '')
+		.replace(/\s+/g, '_')
+		.replace(/[^\p{L}\p{N}_]+/gu, '_')
+		.replace(/_+/g, '_')
+		.replace(/^_|_$/g, '')
 		.slice(0, 120) || 'untitled';
 }
 
