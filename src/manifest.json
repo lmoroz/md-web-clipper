@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 	"name": "MD Web Clipper",
-	"version": "0.1.0",
+	"version": "0.0.0",
 	"description": "Сохраняет содержательную часть страницы как Markdown-файл (с картинками) или копирует в буфер обмена.",
 	"permissions": [
 		"activeTab",
