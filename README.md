@@ -69,7 +69,7 @@ Copy to clipboard копирует markdown с исходными (абсолю�
 
 ## Сборка из исходников
 
-```
+```bash
 npm install
 npm run build      # esbuild → dist/ (Chrome) и dist-firefox/ (Firefox)
 npm run package    # + release/md-web-clipper-{chrome,firefox}-vX.Y.Z.zip
