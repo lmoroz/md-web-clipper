@@ -311,6 +311,17 @@ function prepareDoc() {
 	// text survives. Do NOT touch heading clipboard anchors (yfm-clipboard-anchor):
 	// Defuddle must still strip them, otherwise headings become
 	// "Title:#Title" (visually-hidden + # button + visible text).
+	// Unresolved inline comments wrap the commented text in a span
+	// (Yandex Wiki: span.inline-comment[data-comment-id], Confluence:
+	// span.inline-comment-marker). Defuddle's PARTIAL_SELECTORS '-comment\b'
+	// treats them as clutter and drops the wrapped text ("Код HTTP 22" instead
+	// of 422). Unwrap them so only the marker goes, not the text.
+	for (const el of doc.querySelectorAll(
+		'span.inline-comment, span.inline-comment-marker, ' +
+		'span[data-comment-id], mark[data-comment-id]'
+	)) {
+		el.replaceWith(...el.childNodes);
+	}
 	for (const a of doc.querySelectorAll('a.wiki-anchor')) {
 		const span = doc.createElement('span');
 		const id = a.getAttribute('name') ||
@@ -348,6 +359,35 @@ function normalizeTitle(s) {
 	return normSpace(s);
 }
 
+function metaContent(selector) {
+	const el = document.querySelector(selector);
+	return el ? normSpace(el.getAttribute('content')) : '';
+}
+
+// Defuddle's cleanTitle() guesses the site name by separators when the page
+// declares none, and with "|", "/" or "·" it may cut a LEADING segment:
+// Tracker "PAK-900: Авторизация | Ошибки входа @ Трекер" became
+// "Ошибки входа @ Трекер". A cut-off suffix is usually the site name
+// ("… | Яндекс Вики") and is fine; a cut-off prefix is kept unless it is the
+// declared site name — losing title text is worse than keeping a site name.
+function resolveTitle(defuddleTitle) {
+	const t = normalizeTitle(defuddleTitle);
+	const raws = [
+		metaContent('meta[property="og:title"]'),
+		metaContent('meta[name="twitter:title"]'),
+		normalizeTitle(document.title)
+	].filter(Boolean);
+	if (!t) return raws[0] || '';
+	const raw = raws.find((r) => r !== t && r.includes(t));
+	if (!raw || raw.startsWith(t)) return t;
+	const idx = raw.indexOf(t);
+	const removed = raw.slice(0, idx).replace(/[\s|/·\-–—:]+$/, '').toLowerCase();
+	const site = (metaContent('meta[property="og:site_name"]') ||
+		metaContent('meta[name="application-name"]')).toLowerCase();
+	if (site && removed === site) return t;
+	return raw.slice(0, idx + t.length);
+}
+
 (function clip() {
 	try {
 		const result = new Defuddle(prepareDoc(), { url: document.URL }).parse();
@@ -357,7 +397,7 @@ function normalizeTitle(s) {
 		markdown = fixEscaping(markdown);
 		markdown = fixTableSpacing(markdown);
 		markdown = fixInternalLinks(markdown);
-		const title = normalizeTitle(result.title || document.title) || 'Untitled';
+		const title = resolveTitle(result.title) || 'Untitled';
 
 		// Project item 6: the page title always becomes the H1 of the document.
 		const firstLine = markdown.split('\n', 1)[0] || '';
