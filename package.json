@@ -1,6 +1,6 @@
 {
 	"name": "md-web-clipper",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Save the readable part of a web page as a Markdown file (with images) or copy it to the clipboard.",
 	"private": true,
 	"scripts": {
