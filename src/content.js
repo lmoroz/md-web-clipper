@@ -252,6 +252,60 @@ function textWithSpaces(el) {
 	return normSpace(s);
 }
 
+// Defuddle's _deduplicateImages() treats two consecutive <img> with the same
+// alt and different src as a lazy-load placeholder/real pair whenever only
+// whitespace/markup sits between them, and drops one. Tracker/Wiki screenshots
+// are all alt="image.png", one per paragraph — so the second one vanished.
+// Images whose parents are unrelated (neither contains the other) are distinct
+// content; give them a unique alt marker that clip() strips from the markdown.
+// Real lazy-load pairs share a wrapper and are still deduplicated by Defuddle.
+const ALT_MARK = (i) => `@@MDWCALT${i}@@`;
+const ALT_MARK_RE = /@@MDWCALT\d+@@/g;
+
+function protectDistinctImages(doc) {
+	const imgs = [...doc.querySelectorAll('img')]
+		.filter((img) => !img.closest('noscript, figure'));
+	const alts = imgs.map((img) => (img.getAttribute('alt') || '').trim());
+	let n = 0;
+	for (let i = 1; i < imgs.length; i++) {
+		const a = imgs[i - 1];
+		const b = imgs[i];
+		if (!alts[i] || alts[i] !== alts[i - 1]) continue;
+		if (a.getAttribute('src') === b.getAttribute('src')) continue;
+		const pa = a.parentElement;
+		const pb = b.parentElement;
+		if (!pa || !pb || pa.contains(pb) || pb.contains(pa)) continue;
+		b.setAttribute('alt', alts[i] + ALT_MARK(n++));
+	}
+}
+
+// Attachment feeds (Tracker .ep-files-feed) repeat every inline screenshot as
+// a low-res thumbnail inside <a href="full image"> with a "name + date"
+// caption. Drop such a link when its target is already shown as an <img>
+// outside it. A link wrapping the full image itself (img src == href) stays.
+function resourceKey(url, base) {
+	try {
+		const u = new URL(url, base);
+		return u.origin + u.pathname;
+	} catch { return null; }
+}
+
+function removeRedundantThumbLinks(doc, base) {
+	const links = [...doc.querySelectorAll('a[href]')]
+		.filter((a) => a.querySelector('img[src]'));
+	if (!links.length) return;
+	const imgs = [...doc.querySelectorAll('img[src]')]
+		.map((img) => ({ img, key: resourceKey(img.getAttribute('src'), base) }))
+		.filter((x) => x.key);
+	for (const a of links) {
+		const key = resourceKey(a.getAttribute('href'), base);
+		if (!key) continue;
+		const inside = imgs.filter((x) => a.contains(x.img));
+		if (inside.some((x) => x.key === key)) continue;
+		if (imgs.some((x) => x.key === key && !a.contains(x.img))) a.remove();
+	}
+}
+
 function prepareDoc() {
 	const doc = document.cloneNode(true);
 	const base = document.URL;
@@ -271,6 +325,7 @@ function prepareDoc() {
 			img.setAttribute('src', new URL(img.getAttribute('src'), base).href);
 		} catch { /* keep raw */ }
 	}
+	removeRedundantThumbLinks(doc, base);
 	// Caption lives next to the image (Pikabu .story-block__title, <figcaption>).
 	// Alt often duplicates it — sometimes with raw HTML dumped into the attribute,
 	// which becomes `![...<a href>...](img)` plus a ghost paragraph from that HTML.
@@ -292,6 +347,7 @@ function prepareDoc() {
 		tmp.innerHTML = alt;
 		img.setAttribute('alt', normSpace(tmp.textContent || ''));
 	}
+	protectDistinctImages(doc);
 	// title="https://same-as-href" is noise (Pikabu/LOR) → drop it.
 	for (const a of doc.querySelectorAll('a[href][title]')) {
 		const href = a.getAttribute('href') || '';
@@ -394,6 +450,7 @@ function resolveTitle(defuddleTitle) {
 		const extracted = protectComplexTables(result.content || '', document.URL);
 		let markdown = createMarkdownContent(extracted.html, document.URL).trim();
 		markdown = restoreComplexTables(markdown, extracted.stubs);
+		markdown = markdown.replace(ALT_MARK_RE, '');
 		markdown = fixEscaping(markdown);
 		markdown = fixTableSpacing(markdown);
 		markdown = fixInternalLinks(markdown);
