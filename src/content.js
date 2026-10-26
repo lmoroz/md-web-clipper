@@ -306,6 +306,41 @@ function removeRedundantThumbLinks(doc, base) {
 	}
 }
 
+// Yandex Tracker issue feed: section.issue-activity-section__feed-tab-panel_
+// panel_comments > div.comments > article.comment. Defuddle's PARTIAL_SELECTORS
+// ('comments', '-comment\b') match those class names and drop the whole thread.
+// Scoped to Tracker on purpose: blog comment sections should still go.
+// The new-comment editor lives in the same section and used to vanish with it,
+// so it is removed explicitly before "comment" is renamed out of the classes.
+// The feed header ("Активность" + tabs) and the buttons under the description
+// ("Связь с задачей" link) start leaking once the thread is kept; one
+// "Комментарии" heading replaces them.
+function keepTrackerComments(doc) {
+	const feeds = [...doc.querySelectorAll('[class*="activity-section__feed-tab-panel"]')]
+		.filter((el) => el.querySelector('article.comment'));
+	if (!feeds.length) return;
+	for (const junk of doc.querySelectorAll(
+		'.ep-activity-section__feed-header, .entity-description-action-buttons'
+	)) {
+		junk.remove();
+	}
+	for (const feed of feeds) {
+		for (const junk of feed.querySelectorAll(
+			'.comment-editor, .comments-fast-transition-buttons, .comment__overlay, ' +
+			'.comment-view__actions-rail'
+		)) {
+			junk.remove();
+		}
+		for (const el of [feed, ...feed.querySelectorAll('[class]')]) {
+			const cls = el.getAttribute('class') || '';
+			if (/comment/i.test(cls)) el.setAttribute('class', cls.replace(/comment/gi, 'mdwc-note'));
+		}
+		const h = doc.createElement('h2');
+		h.textContent = 'Комментарии';
+		feed.prepend(h);
+	}
+}
+
 function prepareDoc() {
 	const doc = document.cloneNode(true);
 	const base = document.URL;
@@ -378,6 +413,7 @@ function prepareDoc() {
 	)) {
 		el.replaceWith(...el.childNodes);
 	}
+	keepTrackerComments(doc);
 	for (const a of doc.querySelectorAll('a.wiki-anchor')) {
 		const span = doc.createElement('span');
 		const id = a.getAttribute('name') ||
