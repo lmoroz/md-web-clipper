@@ -346,7 +346,64 @@ function keepTrackerComments(doc) {
 // drop 'form' wholesale: the description vanished while the right-hand panel
 // (Details, More fields, Automation), the Agents block and the Activity tabs
 // leaked in. Only the left column is kept; its forms are unwrapped and its
-// UI chrome removed. Linked/child work items become "KEY summary — Status".
+// UI chrome removed. Linked/child work items become "KEY summary — Status",
+// the attachments table (sort/download buttons as columns) a plain list.
+// Comment bodies were dropped by Defuddle as well, so the Activity feed is
+// rebuilt from scratch: "## Комментарии" + "author time" + body per comment.
+function jiraComments(doc, feed) {
+	const section = doc.createElement('section');
+	for (const item of feed.querySelectorAll('[data-testid^="comment-base-item-"]')) {
+		const header = item.querySelector('[data-testid$="-header"]');
+		const body = item.querySelector('[data-testid$="-body"]');
+		const h3 = header && header.querySelector('h3');
+		const time = item.querySelector('[data-testid="issue-timestamp.relative-time"]');
+		const p = doc.createElement('p');
+		const strong = doc.createElement('strong');
+		const i = doc.createElement('i');
+		i.textContent = normSpace(h3 ? h3.textContent : '');
+		strong.append(i);
+		if (time) strong.append(' ' + normSpace(time.textContent));
+		p.append(strong);
+		section.append(doc.createElement('hr'), p);
+		if (!body) continue;
+		for (const el of [body, ...body.querySelectorAll('[data-testid]')]) {
+			el.removeAttribute('data-testid');
+		}
+		section.append(body);
+	}
+	if (!section.childNodes.length) return null;
+	const h = doc.createElement('h2');
+	h.textContent = 'Комментарии';
+	section.prepend(h);
+	return section;
+}
+
+// A heading with no text/image before the next heading of the same or higher
+// level is UI residue ("Confluence content" promo, empty "Subtasks").
+// Walked bottom-up so that emptied subsections do not count as content.
+function dropEmptySections(doc, root) {
+	const headings = [...root.querySelectorAll('h1, h2, h3, h4, h5, h6')].reverse();
+	for (const h of headings) {
+		const level = +h.tagName[1];
+		const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+		walker.currentNode = h;
+		let empty = true;
+		for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+			if (h.contains(n)) continue;
+			if (n.nodeType === Node.TEXT_NODE) {
+				if (n.nodeValue.trim()) { empty = false; break; }
+			} else if (/^H[1-6]$/.test(n.tagName)) {
+				empty = +n.tagName[1] <= level;
+				break;
+			} else if (n.matches('img, video, iframe')) {
+				empty = false;
+				break;
+			}
+		}
+		if (empty) h.remove();
+	}
+}
+
 function keepJiraIssue(doc) {
 	const column = doc.querySelector(
 		'[data-testid="issue.views.issue-details.issue-layout.left-most-column"]'
@@ -368,26 +425,54 @@ function keepJiraIssue(doc) {
 		if (st) li.append(' — ' + st);
 		(card.closest('[role="listitem"]') || card).replaceWith(li);
 	}
-	const editor = column.querySelector('[data-testid="issue.activity.comment"]');
-	if (editor) editor.parentElement.remove();
+	// Rich text: @mentions sit inside a profile-card <button>, inline files are
+	// icon cards with the name in data-file-name.
+	for (const b of column.querySelectorAll('button[data-testid="user-profile-card-trigger-wrapper"]')) {
+		b.replaceWith(...b.childNodes);
+	}
+	for (const m of column.querySelectorAll('[data-node-type="mediaInline"]')) {
+		const code = doc.createElement('code');
+		code.textContent = m.getAttribute('data-file-name') || normSpace(m.textContent);
+		m.replaceWith(code);
+	}
+	const feed = column.querySelector('[data-testid="issue-activity-feed.feed-display-with-intersection-observer"]');
+	if (feed) {
+		const comments = jiraComments(doc, feed);
+		if (comments) feed.replaceWith(comments);
+		else feed.remove();
+	}
+	for (const table of column.querySelectorAll('[data-testid$="attachment.list-view.container"] table')) {
+		const ul = doc.createElement('ul');
+		for (const tr of table.querySelectorAll('tbody tr')) {
+			const td = [...tr.querySelectorAll('td')];
+			const name = tr.querySelector('[data-testid$="name-with-preview.visually-hidden"]') || td[0];
+			const li = doc.createElement('li');
+			li.textContent = [name, td[1], td[2]]
+				.map((el) => normSpace(el ? el.textContent : ''))
+				.filter(Boolean)
+				.join(' — ');
+			ul.append(li);
+		}
+		table.replaceWith(ul);
+	}
 	for (const junk of column.querySelectorAll(
 		'[data-testid="issue-view-sticky-header-container.sticky-header"], ' +
 		'[data-testid$="foundation-content.foundation-content-wrapper"], ' +
 		'[data-testid="issue-view-base.content.add-work-items.child-items-prompt.container"], ' +
 		'[data-testid^="ai-agent-sessions."], ' +
 		'[data-testid="inline-card-icon-and-title-image"], ' +
-		'#JSW_ACTIVITY_FEED_BUTTONS, [role="tablist"], button'
+		'[data-testid$="attachment.heading.badge"], ' +
+		'button'
 	)) {
 		junk.remove();
 	}
-	const feed = column.querySelector('[data-testid="issue-activity-feed.feed-display-with-intersection-observer"]');
-	if (feed && !normSpace(feed.textContent).replace(/^Activity$/, '')) feed.remove();
 	for (const h of column.querySelectorAll('[role="heading"]')) {
 		const real = doc.createElement('h' + (h.getAttribute('aria-level') || '2'));
 		real.textContent = normSpace(h.textContent);
 		h.replaceWith(real);
 	}
 	for (const form of column.querySelectorAll('form')) form.replaceWith(...form.childNodes);
+	dropEmptySections(doc, column);
 	// Smart links carry the unicode form of a punycode href as title.
 	for (const a of column.querySelectorAll('a[data-testid="link-with-safety"][title]')) {
 		a.removeAttribute('title');
