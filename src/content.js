@@ -341,6 +341,60 @@ function keepTrackerComments(doc) {
 	}
 }
 
+// Jira Cloud issue view. Every inline-editable field (description included)
+// is rendered inside <form role="presentation">, and Defuddle's EXACT_SELECTORS
+// drop 'form' wholesale: the description vanished while the right-hand panel
+// (Details, More fields, Automation), the Agents block and the Activity tabs
+// leaked in. Only the left column is kept; its forms are unwrapped and its
+// UI chrome removed. Linked/child work items become "KEY summary — Status".
+function keepJiraIssue(doc) {
+	const column = doc.querySelector(
+		'[data-testid="issue.views.issue-details.issue-layout.left-most-column"]'
+	);
+	if (!column) return;
+	for (const card of column.querySelectorAll('[data-testid="issue-line-card.card-container"]')) {
+		const key = card.querySelector('[data-testid$="issue-line-card-view.key"]');
+		const summary = card.querySelector('[data-testid$="issue-line-card-view.summary"]');
+		const status = card.querySelector('[data-testid="issue-line-card.ui.status.status-field-container"]');
+		const li = doc.createElement('li');
+		if (key) {
+			const a = doc.createElement('a');
+			a.href = key.getAttribute('href') || '';
+			a.textContent = normSpace(key.textContent);
+			li.append(a, ' ');
+		}
+		li.append(normSpace(summary ? summary.textContent : ''));
+		const st = normSpace(status ? status.textContent : '');
+		if (st) li.append(' — ' + st);
+		(card.closest('[role="listitem"]') || card).replaceWith(li);
+	}
+	const editor = column.querySelector('[data-testid="issue.activity.comment"]');
+	if (editor) editor.parentElement.remove();
+	for (const junk of column.querySelectorAll(
+		'[data-testid="issue-view-sticky-header-container.sticky-header"], ' +
+		'[data-testid$="foundation-content.foundation-content-wrapper"], ' +
+		'[data-testid="issue-view-base.content.add-work-items.child-items-prompt.container"], ' +
+		'[data-testid^="ai-agent-sessions."], ' +
+		'[data-testid="inline-card-icon-and-title-image"], ' +
+		'#JSW_ACTIVITY_FEED_BUTTONS, [role="tablist"], button'
+	)) {
+		junk.remove();
+	}
+	const feed = column.querySelector('[data-testid="issue-activity-feed.feed-display-with-intersection-observer"]');
+	if (feed && !normSpace(feed.textContent).replace(/^Activity$/, '')) feed.remove();
+	for (const h of column.querySelectorAll('[role="heading"]')) {
+		const real = doc.createElement('h' + (h.getAttribute('aria-level') || '2'));
+		real.textContent = normSpace(h.textContent);
+		h.replaceWith(real);
+	}
+	for (const form of column.querySelectorAll('form')) form.replaceWith(...form.childNodes);
+	// Smart links carry the unicode form of a punycode href as title.
+	for (const a of column.querySelectorAll('a[data-testid="link-with-safety"][title]')) {
+		a.removeAttribute('title');
+	}
+	doc.body.replaceChildren(column);
+}
+
 function prepareDoc() {
 	const doc = document.cloneNode(true);
 	const base = document.URL;
@@ -414,6 +468,7 @@ function prepareDoc() {
 		el.replaceWith(...el.childNodes);
 	}
 	keepTrackerComments(doc);
+	keepJiraIssue(doc);
 	for (const a of doc.querySelectorAll('a.wiki-anchor')) {
 		const span = doc.createElement('span');
 		const id = a.getAttribute('name') ||
