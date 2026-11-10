@@ -26,15 +26,20 @@ body {
 	font: 12px/1.45 ui-monospace, Consolas, monospace;
 	white-space: pre;
 }
-#imgRow {
+#imgRow,
+#vidRow {
 	user-select: none;
 	color: #444;
+}
+#vidRow[hidden] {
+	display: none;
 }
 #buttons {
 	display: flex;
 	gap: 8px;
 }
-#buttons button {
+#buttons button,
+#saveHere {
 	flex: 1;
 	padding: 8px 0;
 	border: 0;
@@ -44,9 +49,23 @@ body {
 	font-weight: 600;
 	cursor: pointer;
 }
-#buttons button:disabled {
+#buttons button:disabled,
+#saveHere:disabled {
 	background: #bbb;
 	cursor: default;
+}
+/* Primary action: full-width, long folder names are cut with an ellipsis. */
+#saveHere {
+	padding: 10px 8px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+#saveHere[hidden] {
+	display: none;
+}
+#buttons #save {
+	background: #5a3fc0;
 }
 #buttons #copy {
 	background: #444;
@@ -57,10 +76,4 @@ body {
 }
 #status.error {
 	color: #c00;
-}
-#dirRow {
-	color: #444;
-}
-#dirRow a {
-	color: #7852ee;
 }

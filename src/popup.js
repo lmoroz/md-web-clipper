@@ -1,9 +1,9 @@
 import { kvGet, kvSet } from './idb.js';
+import { encodeRelPath, rewriteLink } from './links.js';
 
 const $ = (id) => document.getElementById(id);
 let clip = null;
 let tabId = null;
-let askDir = false; // user wants to pick a (different) folder on this save
 
 function setStatus(text, isError) {
 	const el = $('status');
@@ -69,23 +69,54 @@ function collectImageUrls(md, pageUrl) {
 	return { urls, forms };
 }
 
-// Relative link destination: no <>, percent-encode the few unsafe characters.
-// Names are underscore-separated already, so this is just a safety net.
-function encodeRelPath(path) {
-	return path.replace(/%/g, '%25').replace(/ /g, '%20')
-		.replace(/\(/g, '%28').replace(/\)/g, '%29');
+// <video>/<audio> kept by Defuddle as raw HTML (src made absolute in
+// prepareDoc). Files can be hundreds of MB, so they are NOT fetched here:
+// the save window streams them straight to disk. Attribute values may carry
+// &amp; — the raw spelling is kept for rewriting, the decoded one is fetched.
+// Returns [{ url, kind: 'vid'|'aud', forms: [raw spellings] }].
+function collectMediaUrls(md, pageUrl) {
+	const byUrl = new Map();
+	const re = /<(video|audio|source)\b[^>]*?\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')/gi;
+	let m;
+	while ((m = re.exec(md)) !== null) {
+		const raw = m[2] || m[3];
+		let abs;
+		try {
+			abs = new URL(raw.replace(/&amp;/g, '&'), pageUrl || undefined).href;
+		} catch {
+			continue;
+		}
+		if (!/^https?:/i.test(abs)) continue;
+		if (!byUrl.has(abs)) {
+			const kind = m[1].toLowerCase() === 'audio' ? 'aud' : 'vid';
+			byUrl.set(abs, { url: abs, kind, forms: new Set() });
+		}
+		byUrl.get(abs).forms.add(raw);
+	}
+	return [...byUrl.values()].map((x) => ({ ...x, forms: [...x.forms] }));
 }
 
-function rewriteLink(md, urlOrForms, rel) {
-	const forms = typeof urlOrForms === 'string' ? [urlOrForms] : [...urlOrForms];
-	for (const url of forms) {
-		md = md
-			.split('(' + url + ')').join('(' + rel + ')')
-			.split('(<' + url + '>)').join('(' + rel + ')')
-			.split('src="' + url + '"').join('src="' + rel + '"')
-			.split("src='" + url + "'").join("src='" + rel + "'");
-	}
-	return md;
+function fmtSize(bytes) {
+	if (bytes >= 1024 ** 3) return (bytes / 1024 ** 3).toFixed(1).replace('.', ',') + ' ГБ';
+	return Math.max(1, Math.round(bytes / 1024 ** 2)) + ' МБ';
+}
+
+// Show how much "Save" is going to pull: one HEAD per file, in parallel.
+// Content-Length is CORS-safelisted, so this works wherever the GET would.
+async function showMediaInfo(md, pageUrl) {
+	const media = collectMediaUrls(md, pageUrl);
+	$('vidRow').hidden = !media.length;
+	if (!media.length) return;
+	$('vidInfo').textContent = '(' + media.length + ' шт.)';
+	const sizes = await Promise.all(media.map((x) =>
+		fetch(x.url, { method: 'HEAD', credentials: 'omit' })
+			.then((r) => (r.ok ? +r.headers.get('content-length') || 0 : 0))
+			.catch(() => 0)));
+	const total = sizes.reduce((a, b) => a + b, 0);
+	const unknown = sizes.filter((s) => !s).length;
+	if (!total) return;
+	$('vidInfo').textContent = '(' + media.length + ' шт., ' +
+		(unknown ? '≥ ' : '') + fmtSize(total) + ')';
 }
 
 // Runs INSIDE the page: fetch ONE image with the page's cookies/session.
@@ -182,7 +213,11 @@ function b64ToBlob(type, b64) {
 // Gather everything, put it into IndexedDB and open the save window, which
 // writes the files into a user-chosen folder via the File System Access API.
 // (The picker cannot be shown from this popup: it closes on losing focus.)
-async function saveFile() {
+// forcePicker: ignore the remembered folder and show the picker again
+// ("Save to another folder"); false = straight into the remembered folder.
+async function saveFile(forcePicker) {
+	$('saveHere').disabled = true;
+	$('save').disabled = true;
 	const base = sanitizeName($('filename').value);
 	let md = clip.markdown;
 	const images = [];
@@ -221,7 +256,8 @@ async function saveFile() {
 		}
 	}
 
-	await kvSet('pending', { base, markdown: md, images, failed, forcePicker: askDir });
+	const media = $('videos').checked ? collectMediaUrls(md, clip.url) : [];
+	await kvSet('pending', { base, markdown: md, images, media, failed, forcePicker });
 	await chrome.windows.create({
 		url: 'save.html',
 		type: 'popup',
@@ -240,28 +276,44 @@ function onClip(data) {
 	clip = data;
 	$('filename').value = sanitizeName(data.title);
 	$('preview').value = data.markdown;
+	$('saveHere').disabled = false;
 	$('save').disabled = false;
 	$('copy').disabled = false;
 	setStatus('');
+	showMediaInfo(data.markdown, data.url).catch(() => {});
 }
 
-async function refreshDirRow() {
+// Quick-save button for the remembered folder (if any); the second button
+// always asks for a folder. Without FSA (Firefox, Brave) everything goes to
+// the browser Downloads folder, so only one button makes sense.
+async function refreshSaveButtons() {
 	if (typeof showDirectoryPicker !== 'function') {
-		$('dirName').textContent = 'Загрузки браузера (выбор папки недоступен)';
-		$('changeDir').hidden = true;
+		$('saveHere').hidden = true;
+		$('save').textContent = 'Save to Downloads';
 		return;
 	}
-	const dir = askDir ? null : await kvGet('dir').catch(() => null);
-	$('dirName').textContent = dir ? dir.name : 'будет выбрана при сохранении';
-	$('changeDir').hidden = !dir;
+	const dir = await kvGet('dir').catch(() => null);
+	$('saveHere').hidden = !dir;
+	if (dir) {
+		$('dirName').textContent = dir.name;
+		$('saveHere').title = 'Сохранить в ранее выбранную папку «' + dir.name + '»';
+	}
+	$('save').textContent = dir ? 'Save to another folder' : 'Save to folder…';
 }
 
-$('changeDir').addEventListener('click', (e) => {
-	e.preventDefault();
-	askDir = true;
-	refreshDirRow();
+// Video choice is sticky: a gigabyte-sized page should not surprise twice.
+try {
+	$('videos').checked = localStorage.getItem('mdwc.videos') !== '0';
+} catch { /* storage unavailable — keep default */ }
+$('videos').addEventListener('change', () => {
+	try { localStorage.setItem('mdwc.videos', $('videos').checked ? '1' : '0'); } catch { /* ignore */ }
 });
-$('save').addEventListener('click', () => saveFile().catch((e) => setStatus(String(e), true)));
+const onSave = (forcePicker) => () => saveFile(forcePicker).catch((e) => {
+	setStatus(String(e), true);
+	$('saveHere').disabled = $('save').disabled = !clip;
+});
+$('saveHere').addEventListener('click', onSave(false));
+$('save').addEventListener('click', onSave(true));
 $('copy').addEventListener('click', () => copyToClipboard().catch((e) => setStatus(String(e), true)));
 $('preview').addEventListener('input', () => { if (clip) clip.markdown = $('preview').value; });
 
@@ -272,7 +324,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 
 (async () => {
 	setStatus('Извлекаю страницу…');
-	refreshDirRow();
+	refreshSaveButtons();
 	const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 	if (!tab || !/^https?:/i.test(tab.url || '')) {
 		setStatus('Эту страницу сохранить нельзя (не http/https).', true);

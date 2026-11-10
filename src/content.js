@@ -480,9 +480,41 @@ function keepJiraIssue(doc) {
 	doc.body.replaceChildren(column);
 }
 
+// <video>/<audio> survive Defuddle as raw HTML (Turndown keep rule), but the
+// source is often not in the src attribute: <source> children, lazy data-src,
+// or set by a player script (only visible as currentSrc on the LIVE element —
+// cloneNode keeps document order, so live and cloned lists align by index).
+// The popup and the save window only look at an absolute http(s) src on the
+// tag itself; blob:/MediaSource streams cannot be saved and are left alone.
+function normalizeMedia(doc, base) {
+	const live = [...document.querySelectorAll('video, audio')];
+	const cloned = [...doc.querySelectorAll('video, audio')];
+	cloned.forEach((el, i) => {
+		const source = el.querySelector('source[src]');
+		const candidates = [
+			el.getAttribute('src'),
+			el.getAttribute('data-src'),
+			source && source.getAttribute('src'),
+			live[i] && live[i].currentSrc
+		];
+		for (const c of candidates) {
+			if (!c) continue;
+			let abs;
+			try { abs = new URL(c, base).href; } catch { continue; }
+			if (!/^https?:/i.test(abs)) continue;
+			el.setAttribute('src', abs);
+			el.removeAttribute('data-src');
+			for (const s of el.querySelectorAll('source')) s.remove();
+			el.setAttribute('controls', '');
+			break;
+		}
+	});
+}
+
 function prepareDoc() {
 	const doc = document.cloneNode(true);
 	const base = document.URL;
+	normalizeMedia(doc, base);
 	for (const t of doc.querySelectorAll('time[datetime]')) {
 		const s = fmtDate(t.getAttribute('datetime'));
 		if (s) t.textContent = s;

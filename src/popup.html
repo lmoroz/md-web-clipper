@@ -9,9 +9,10 @@
 		<input id="filename" type="text" title="Имя файла" spellcheck="false">
 		<textarea id="preview" spellcheck="false" placeholder="Извлекаю страницу…"></textarea>
 		<label id="imgRow"><input id="images" type="checkbox" checked> Скачивать картинки (в подпапку «…_files»)</label>
-		<div id="dirRow">Папка: <span id="dirName">…</span> <a id="changeDir" href="#" hidden>изменить</a></div>
+		<label id="vidRow" hidden><input id="videos" type="checkbox" checked> Скачивать видео <span id="vidInfo"></span></label>
+		<button id="saveHere" hidden disabled>Save to «<span id="dirName"></span>»</button>
 		<div id="buttons">
-			<button id="save" disabled>Save file</button>
+			<button id="save" disabled>Save to folder…</button>
 			<button id="copy" disabled>Copy to clipboard</button>
 		</div>
 		<div id="status"></div>
