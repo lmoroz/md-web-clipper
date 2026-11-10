@@ -16,6 +16,13 @@
 			<button id="copy" disabled>Copy to clipboard</button>
 		</div>
 		<div id="status"></div>
+		<div id="update" hidden>
+			<a id="updLink" target="_blank" rel="noopener"></a>
+			<span id="updInfo" tabindex="0" aria-describedby="updTip">
+				<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="4.6" r="1" fill="currentColor"/><path d="M8 7v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+				<div id="updTip" role="tooltip"></div>
+			</span>
+		</div>
 	</div>
 	<script src="popup.js"></script>
 </body>

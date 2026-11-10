@@ -1,5 +1,6 @@
 import { kvGet, kvSet } from './idb.js';
 import { encodeRelPath, rewriteLink } from './links.js';
+import { checkForUpdate } from './updates.js';
 
 const $ = (id) => document.getElementById(id);
 let clip = null;
@@ -316,6 +317,47 @@ $('saveHere').addEventListener('click', onSave(false));
 $('save').addEventListener('click', onSave(true));
 $('copy').addEventListener('click', () => copyToClipboard().catch((e) => setStatus(String(e), true)));
 $('preview').addEventListener('input', () => { if (clip) clip.markdown = $('preview').value; });
+
+// Release notes are plain markdown ("Новое:\n- …"): bullets → <li>, other
+// lines → section captions. Built with textContent only — no HTML from the API.
+function renderNotes(tip, releases) {
+	const el = (tag, text) => {
+		const n = document.createElement(tag);
+		if (text != null) n.textContent = text;
+		return n;
+	};
+	const plain = (s) => s.replace(/\*\*|__|`/g, '').trim();
+	for (const r of releases) {
+		const h = el('h4', r.v.join('.') + ' ');
+		const d = new Date(r.date);
+		if (!isNaN(d)) h.append(el('small', d.toLocaleDateString('ru-RU')));
+		tip.append(h);
+		let ul = null;
+		for (const line of r.body.split(/\r?\n/)) {
+			const item = line.match(/^\s*[-*+]\s+(.*)$/);
+			if (item) {
+				if (!ul) tip.append(ul = el('ul'));
+				ul.append(el('li', plain(item[1])));
+			} else if (line.trim()) {
+				ul = null;
+				tip.append(el('p', plain(line.replace(/^#+\s*/, ''))));
+			}
+		}
+	}
+}
+
+async function showUpdate() {
+	const current = chrome.runtime.getManifest().version;
+	const newer = await checkForUpdate(current);
+	if (!newer) return;
+	const link = $('updLink');
+	link.href = newer[0].url;
+	link.textContent = `Доступна версия ${newer[0].v.join('.')} (у вас ${current})`;
+	renderNotes($('updTip'), newer);
+	$('update').hidden = false;
+}
+
+showUpdate().catch(() => { /* update check must never break clipping */ });
 
 chrome.runtime.onMessage.addListener((msg) => {
 	if (msg && msg.type === 'clip-result') onClip(msg.data);
